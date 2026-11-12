@@ -6,6 +6,8 @@
 免費版（R2 分片，跑在 Workers Free）：
 [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/paid-tw/tw-ubn/tree/main/worker)
 
+免綁信用卡版（Static Assets，跑在 Workers Free，用 GitHub Actions 部署）：見[免綁信用卡部署](#免綁信用卡部署static-assets)。
+
 付費版（D1，含名稱搜尋，需 Workers Paid）：
 [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/paid-tw/tw-ubn/tree/main/worker-d1)
 
@@ -139,6 +141,33 @@ GET https://<你的worker>/v1/vat/22099131
 GET https://<你的worker-d1>/v1/search?name=台灣積體      # 名稱前綴搜尋，付費版限定
 → { "query": "台灣積體", "count": 1, "results": [ … ] }
 ```
+
+### 免綁信用卡部署（Static Assets）
+
+R2 就算只用免費額度也要先綁信用卡。不想綁卡的話，可以把分片當成 Workers Static Assets，
+跟 `worker/` 一起部署（設定檔 `worker/wrangler.assets.jsonc`）。程式碼和端點跟免費版相同，
+差別只在資料放在哪裡：
+
+- Free 方案每個版本最多 2 萬個靜態檔案、單檔 25 MiB；8192 個分片（最大約 52 KB）在範圍內。
+- 直接取用靜態檔案（`/shards/<n>.json`、`/latest.json`）的請求不收費，也不算進 Workers
+  每日 10 萬次請求額度；`/v1/vat/:ban` 會執行 Worker，照常計算。
+- 每次部署會覆蓋前一版，儲存空間不會累積。
+- 靜態檔案的 CORS 由 `worker/public/_headers` 決定（預設 `*`），不受 `ALLOWED_ORIGINS` 影響。
+
+部署由 [`worker-assets.yml`](.github/workflows/worker-assets.yml) 每天 01:30 UTC 執行：
+下載最新的 `data-YYYYMMDD` release 裡的 `shards.tar.gz`，確認分片數量完整後執行
+`wrangler deploy`。不需要自己跑 Rust 建檔。
+
+1. Fork 這個 repo。
+2. 在 Cloudflare 建立 API token（範本「Edit Cloudflare Workers」）。
+3. 在 fork 的 Settings → Environments 建立 `dataset` 環境，加入 secrets
+   `CLOUDFLARE_API_TOKEN` 與 `CLOUDFLARE_ACCOUNT_ID`。
+4. 到 Actions 啟用 workflow，手動執行一次 **Deploy free Worker (Static Assets)**。
+
+Worker 名稱是 `tw-ubn`。資料預設從 `paid-tw/tw-ubn` 的 release 下載；要改用
+自己的 release，設定 repository variable `UBN_DATA_REPO`。這個部署用不到 `dataset.yml`，
+可以在 fork 的 Actions 頁面停用 **Build dataset**。客戶端的 `baseUrl` 指向這個 Worker 即可（`latest.json` 是
+`{"latest":""}`，客戶端會直接讀 `/shards/`）。
 
 > 為何預設用 R2 而非 D1？在真實 Cloudflare 帳號上實測過延遲／成本／灌資料，純點查 R2 更省：
 > [docs/bench-r2-vs-d1.md](docs/bench-r2-vs-d1.md)。D1 版的價值在於名稱搜尋。

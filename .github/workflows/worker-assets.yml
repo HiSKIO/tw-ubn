@@ -1,0 +1,76 @@
+name: Deploy free Worker (Static Assets)
+
+# Free, no-R2 deploy: ship the latest published shards as Workers Static Assets
+# together with worker/. Needs only a Cloudflare API token, no credit card.
+# Data comes from the dated `data-YYYYMMDD` releases that dataset.yml publishes,
+# so a fork can deploy without running the Rust build itself.
+
+on:
+  schedule:
+    # 01:30 UTC, two hours after dataset.yml (23:30 UTC) publishes the day's release.
+    - cron: '30 1 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: worker-assets
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    # Same environment as dataset.yml, restricted to the default branch (docs/operations.md).
+    environment: dataset
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      # Repo variable; forks keep reading the upstream releases unless they set it.
+      DATA_REPO: ${{ vars.UBN_DATA_REPO || 'paid-tw/tw-ubn' }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Check secrets
+        id: gate
+        run: |
+          if [ -z "$CLOUDFLARE_API_TOKEN" ] || [ -z "$CLOUDFLARE_ACCOUNT_ID" ]; then
+            echo "CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID not set; skipping deploy"
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - if: steps.gate.outputs.run == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - if: steps.gate.outputs.run == 'true'
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+
+      # `gh release download` with no tag would pick the newest release of any
+      # kind, which can be a `ubn-v*` client release, so select data-YYYYMMDD.
+      - name: Download latest shards
+        if: steps.gate.outputs.run == 'true'
+        run: |
+          TAG=$(gh release list --repo "$DATA_REPO" --limit 50 --json tagName \
+            -q '[.[].tagName | select(test("^data-[0-9]{8}$"))] | sort | last')
+          if [ -z "$TAG" ]; then echo "::error::no data-YYYYMMDD release in $DATA_REPO"; exit 1; fi
+          echo "deploying $DATA_REPO@$TAG"
+          gh release download "$TAG" --repo "$DATA_REPO" \
+            --pattern shards.tar.gz --pattern manifest.json --dir rel
+          tar -xzf rel/shards.tar.gz -C worker/public
+          cp rel/manifest.json worker/public/manifest.json
+          # Deploy only a complete set: a partial one would turn misses into
+          # cached found:false answers for bans in the missing shards.
+          WANT=$(jq -r .shards rel/manifest.json)
+          GOT=$(find worker/public/shards -name '*.json' | wc -l)
+          if [ "$GOT" != "$WANT" ]; then
+            echo "::error::expected $WANT shards, got $GOT"; exit 1
+          fi
+          echo "SHARDS=$WANT" >> "$GITHUB_ENV"
+
+      - name: Deploy
+        if: steps.gate.outputs.run == 'true'
+        working-directory: worker
+        run: npx -y wrangler@4 deploy --config wrangler.assets.jsonc --var "SHARDS:$SHARDS"

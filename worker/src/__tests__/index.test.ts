@@ -161,6 +161,49 @@ describe('vat lookup: dataset, FIA fallback, and what gets cached', () => {
     expect(put).toHaveBeenCalledTimes(1);
   });
 
+  describe('Static Assets dataset (no R2 bound)', () => {
+    /** An ASSETS binding serving `files` by pathname; anything else is a 404. */
+    const assets = (files: Record<string, unknown>, status = 200) =>
+      ({
+        fetch: (input: RequestInfo | URL) => {
+          const path = new URL(String(input)).pathname.slice(1);
+          if (status !== 200) return Promise.resolve(new Response('boom', { status }));
+          return Promise.resolve(path in files ? Response.json(files[path]) : new Response(null, { status: 404 }));
+        },
+      }) as unknown as Fetcher;
+    const lookupAssets = (a: Fetcher) =>
+      worker.fetch(new Request('https://w/v1/vat/22099131'), { ...env, SHARDS: '256', ASSETS: a }, ctx);
+
+    it('answers a hit from the flat shard without calling FIA, and caches it', async () => {
+      const f = fia(() => Promise.resolve(Response.json(TSMC)));
+      const res = await lookupAssets(assets({ 'shards/216.json': [{ ban: '22099131', name: '台積電', useInvoice: true }] }));
+      expect(await res.json()).toMatchObject({ found: true, name: '台積電', source: 'dataset' });
+      expect(f).not.toHaveBeenCalled();
+      expect(put).toHaveBeenCalledTimes(1);
+    });
+
+    it('caches found:false when the shard misses cleanly and FIA says 404', async () => {
+      fia(() => Promise.resolve(new Response(null, { status: 404 })));
+      const res = await lookupAssets(assets({ 'shards/216.json': [] }));
+      expect(await res.json()).toMatchObject({ found: false });
+      expect(put).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not cache a FIA 404 while the shard is missing (no data deployed yet)', async () => {
+      fia(() => Promise.resolve(new Response(null, { status: 404 })));
+      const res = await lookupAssets(assets({}));
+      expect(await res.json()).toEqual({ found: false, ban: '22099131' });
+      expect(put).not.toHaveBeenCalled();
+    });
+
+    it('falls back to FIA, uncached on a miss, when the assets read errors', async () => {
+      fia(() => Promise.resolve(new Response(null, { status: 404 })));
+      const res = await lookupAssets(assets({}, 500));
+      expect(res.status).toBe(200);
+      expect(put).not.toHaveBeenCalled();
+    });
+  });
+
   describe('GCIS fallback after a FIA 404', () => {
     const FIA_404 = () => Promise.resolve(new Response(null, { status: 404 }));
     // Field names as returned live by GCIS on 2026-10-29.

@@ -11,3 +11,8 @@ tmp/
 # Rust
 /target
 .wrangler/
+
+# Filled by worker-assets.yml at deploy time
+/worker/public/*
+!/worker/public/_headers
+!/worker/public/latest.json

@@ -11,6 +11,11 @@ import {
 export interface Env {
   /** R2 bucket holding the published dataset. Optional; falls back to FIA. */
   UBN_BUCKET?: R2Bucket;
+  /**
+   * Static Assets holding the shards flat at `/shards/<n>.json` (the free,
+   * no-R2 deploy, wrangler.assets.jsonc). Read only when UBN_BUCKET is unbound.
+   */
+  ASSETS?: Fetcher;
   /** "*" (default) or a comma-separated origin allowlist. */
   ALLOWED_ORIGINS?: string;
   /** Shard count of the published dataset (must match manifest.json). */
@@ -50,12 +55,12 @@ export default {
     if (cached) return withCors(cached, cors);
 
     const ttl = Number(env.CACHE_TTL ?? '86400');
-    const r2 = await fromR2(ban, env);
+    const dataset = await fromDataset(ban, env);
     let result: UBNResult;
     let cacheable: boolean;
     let cacheTtl = ttl;
-    if (r2.ok && r2.value) {
-      result = r2.value;
+    if (dataset.ok && dataset.value) {
+      result = dataset.value;
       cacheable = true;
     } else {
       const fia = await fromFia(ban);
@@ -66,9 +71,9 @@ export default {
       }
       result = fia.value;
       // A "not found" is authoritative only if the dataset read was too; when
-      // R2 errored the ban may just be in the unread shard, so don't pin
-      // found:false in the cache for a day.
-      cacheable = fia.value.found || r2.ok;
+      // the dataset read failed the ban may just be in the unread shard, so
+      // don't pin found:false in the cache for a day.
+      cacheable = fia.value.found || dataset.ok;
       if (!fia.value.found) {
         // Not in the tax registry: GCIS may still know the company, closed
         // (解散/廢止 …, so the caller can say why) or live but unregistered
@@ -100,36 +105,49 @@ export default {
 type Lookup<T> = { ok: true; value: T } | { ok: false };
 
 /**
- * Look the UBN up in the R2-hosted shards: `{ ok: true }` with the row, or
+ * Look the UBN up in the published shards: `{ ok: true }` with the row, or
  * with `null` for an authoritative "not in the dataset"; `{ ok: false }` when
  * the dataset should be there but couldn't be read.
  *
- * An unbound bucket is FIA-only mode by design (the binding is optional), so
- * there is no dataset to consult and FIA alone is authoritative: `ok: true`.
- * A bound bucket without `latest.json` (or without the ban's shard) is a
- * dataset that is meant to exist but isn't published yet, the same state as
- * worker-d1 before its first load: `ok: false`, so a FIA 404 isn't pinned in
- * the cache while the real dataset might still carry the ban.
+ * No dataset binding is FIA-only mode by design (both bindings are optional),
+ * so FIA alone is authoritative: `ok: true`. A bound dataset that lacks the
+ * ban's shard (or, on R2, `latest.json`) is meant to exist but isn't
+ * published yet, the same state as worker-d1 before its first load:
+ * `ok: false`, so a FIA 404 isn't pinned in the cache while the real dataset
+ * might still carry the ban.
  */
-async function fromR2(ban: string, env: Env): Promise<Lookup<UBNResult | null>> {
-  if (!env.UBN_BUCKET) return { ok: true, value: null };
+async function fromDataset(ban: string, env: Env): Promise<Lookup<UBNResult | null>> {
+  const shard = `shards/${shardOf(ban, Number(env.SHARDS ?? '8192'))}.json`;
   try {
-    const pointer = await env.UBN_BUCKET.get('latest.json');
-    if (!pointer) return { ok: false };
-    const { latest } = (await pointer.json()) as { latest?: string };
-    if (!latest) return { ok: false };
-
-    const shards = Number(env.SHARDS ?? '8192');
-    const obj = await env.UBN_BUCKET.get(`${latest}/shards/${shardOf(ban, shards)}.json`);
-    if (!obj) return { ok: false };
-
-    const rows = (await obj.json()) as ShardRow[];
+    let rows: ShardRow[] | null;
+    if (env.UBN_BUCKET) rows = await r2Shard(env.UBN_BUCKET, shard);
+    else if (env.ASSETS) rows = await assetShard(env.ASSETS, shard);
+    else return { ok: true, value: null };
+    if (!rows) return { ok: false };
     const rec = rows.find((r) => r.ban === ban);
     return { ok: true, value: rec ? datasetResult(rec) : null };
   } catch (e) {
-    console.error('r2 lookup failed; falling back to FIA', e);
+    console.error('dataset lookup failed; falling back to FIA', e);
     return { ok: false };
   }
+}
+
+/** R2 keeps shards under a versioned prefix named by `latest.json`. */
+async function r2Shard(bucket: R2Bucket, shard: string): Promise<ShardRow[] | null> {
+  const pointer = await bucket.get('latest.json');
+  if (!pointer) return null;
+  const { latest } = (await pointer.json()) as { latest?: string };
+  if (!latest) return null;
+  const obj = await bucket.get(`${latest}/${shard}`);
+  return obj ? ((await obj.json()) as ShardRow[]) : null;
+}
+
+/** Static Assets ship one version per deploy, so shards sit flat. The host is ignored. */
+async function assetShard(assets: Fetcher, shard: string): Promise<ShardRow[] | null> {
+  const res = await assets.fetch(`https://assets.local/${shard}`);
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(`assets returned HTTP ${res.status}`);
+  return (await res.json()) as ShardRow[];
 }
 
 /** The official FIA per-record API: 404 is an authoritative "not found". */
