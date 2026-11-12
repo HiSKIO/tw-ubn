@@ -1,0 +1,19 @@
+{
+  // Free, no-R2 variant: the shards ship as Workers Static Assets with each
+  // deploy, so no credit card is needed (R2 requires one even on its free tier).
+  // Deployed daily by .github/workflows/worker-assets.yml, which fills public/.
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "tw-ubn-lookup-assets",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-01",
+  "observability": { "enabled": true },
+  "vars": {
+    "ALLOWED_ORIGINS": "*",
+    "SHARDS": "8192",
+    "CACHE_TTL": "86400",
+    "NEGATIVE_CACHE_TTL": "3600"
+  },
+  // Requests for an existing file (shards/<n>.json, latest.json) are served
+  // without running the Worker and are not billed; everything else reaches it.
+  "assets": { "directory": "./public", "binding": "ASSETS" }
+}

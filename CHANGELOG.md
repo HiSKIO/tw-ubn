@@ -22,6 +22,10 @@ ship when merged to `main`.
   of the npm client's tests so the Ruby gem's tests read the same ones.
 - Release workflow: after publishing to npm, create the GitHub Release for the
   `ubn-v*` tag, with that version's CHANGELOG.md section as its notes.
+- Free Worker without R2 (no credit card): `worker/` can read shards from
+  Workers Static Assets (`ASSETS` binding, `wrangler.assets.jsonc`), and the
+  `worker-assets.yml` workflow deploys the newest `data-YYYYMMDD` release's
+  shards daily.
 
 ## [0.2.0] - 2026-10-29
 

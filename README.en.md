@@ -6,6 +6,8 @@
 Free tier (R2 shards, runs on Workers Free):
 [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/paid-tw/tw-ubn/tree/main/worker)
 
+No-credit-card tier (Static Assets, runs on Workers Free, deployed by GitHub Actions): see [Deploy without a credit card](#deploy-without-a-credit-card-static-assets).
+
 Paid tier (D1, adds name search, needs Workers Paid):
 [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/paid-tw/tw-ubn/tree/main/worker-d1)
 
@@ -160,6 +162,39 @@ GET https://<your-worker>/v1/vat/22099131
 GET https://<your-worker-d1>/v1/search?name=台灣積體      # name prefix search, paid only
 → { "query": "台灣積體", "count": 1, "results": [ … ] }
 ```
+
+### Deploy without a credit card (Static Assets)
+
+R2 needs a payment method on file even within its free tier. To avoid that,
+ship the shards as Workers Static Assets together with `worker/` (config
+`worker/wrangler.assets.jsonc`). The code and endpoints are the same as the free
+tier; only where the data lives changes:
+
+- Free accounts allow 20,000 static files per version, 25 MiB each; 8,192 shards
+  (largest about 52 KB) fit.
+- Requests served straight from a static file (`/shards/<n>.json`,
+  `/latest.json`) are free and do not count toward the 100k requests/day
+  Workers quota; `/v1/vat/:ban` runs the Worker and counts as usual.
+- Each deploy replaces the previous one, so storage does not accumulate.
+- CORS on the static files comes from `worker/public/_headers` (default `*`),
+  not from `ALLOWED_ORIGINS`.
+
+[`worker-assets.yml`](.github/workflows/worker-assets.yml) deploys daily at
+01:30 UTC: it downloads `shards.tar.gz` from the newest `data-YYYYMMDD`
+release, checks the shard count, and runs `wrangler deploy`. No Rust build needed.
+
+1. Fork this repo.
+2. Create a Cloudflare API token (template "Edit Cloudflare Workers").
+3. In the fork, Settings → Environments → create `dataset` and add the secrets
+   `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`.
+4. Enable workflows under Actions and run **Deploy free Worker (Static Assets)**
+   once by hand.
+
+The Worker is named `tw-ubn-lookup-assets`. Data comes from the
+`paid-tw/tw-ubn` releases by default; set the repository variable
+`UBN_DATA_REPO` to use your own. This deploy does not use `dataset.yml`;
+disable **Build dataset** in the fork's Actions tab. Point the client's `baseUrl` at this
+Worker (`latest.json` is `{"latest":""}`, so the client reads `/shards/` flat).
 
 > Why R2 by default, not D1? Measured on a real Cloudflare account — for plain
 > point lookups R2 is cheaper: [docs/bench-r2-vs-d1.md](docs/bench-r2-vs-d1.md).
