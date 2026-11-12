@@ -164,7 +164,7 @@ R2 就算只用免費額度也要先綁信用卡。不想綁卡的話，可以�
    `CLOUDFLARE_API_TOKEN` 與 `CLOUDFLARE_ACCOUNT_ID`。
 4. 到 Actions 啟用 workflow，手動執行一次 **Deploy free Worker (Static Assets)**。
 
-Worker 名稱是 `tw-ubn-lookup-assets`。資料預設從 `paid-tw/tw-ubn` 的 release 下載；要改用
+Worker 名稱是 `tw-ubn`。資料預設從 `paid-tw/tw-ubn` 的 release 下載；要改用
 自己的 release，設定 repository variable `UBN_DATA_REPO`。這個部署用不到 `dataset.yml`，
 可以在 fork 的 Actions 頁面停用 **Build dataset**。客戶端的 `baseUrl` 指向這個 Worker 即可（`latest.json` 是
 `{"latest":""}`，客戶端會直接讀 `/shards/`）。

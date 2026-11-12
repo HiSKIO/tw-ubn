@@ -190,7 +190,7 @@ release, checks the shard count, and runs `wrangler deploy`. No Rust build neede
 4. Enable workflows under Actions and run **Deploy free Worker (Static Assets)**
    once by hand.
 
-The Worker is named `tw-ubn-lookup-assets`. Data comes from the
+The Worker is named `tw-ubn`. Data comes from the
 `paid-tw/tw-ubn` releases by default; set the repository variable
 `UBN_DATA_REPO` to use your own. This deploy does not use `dataset.yml`;
 disable **Build dataset** in the fork's Actions tab. Point the client's `baseUrl` at this

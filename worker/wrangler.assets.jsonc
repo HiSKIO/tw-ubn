@@ -3,7 +3,7 @@
   // deploy, so no credit card is needed (R2 requires one even on its free tier).
   // Deployed daily by .github/workflows/worker-assets.yml, which fills public/.
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "tw-ubn-lookup-assets",
+  "name": "tw-ubn",
   "main": "src/index.ts",
   "compatibility_date": "2026-10-01",
   "observability": { "enabled": true },
