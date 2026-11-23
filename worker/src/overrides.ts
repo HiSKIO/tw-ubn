@@ -28,11 +28,16 @@ const KINDS: readonly RegistryKind[] = ['business', 'nonprofit', 'school', 'agen
 const PREFIX = 'ban:';
 const LIMITS = { name: 200, address: 300, note: 500 } as const;
 const CONTROL = /[\u0000-\u001f\u007f]/;
+// Clients drop a title with Private Use Area glyphs (#10), so such a name would never reach checkout.
+const PRIVATE_USE = /\p{Co}/u;
+// JSON.stringify escapes a lone surrogate to 6 bytes, which would break the metadata size bound.
+const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
 
 /**
  * Validate an operator's input for `ban`. Strings are trimmed; an empty
  * optional field is dropped. Control characters are rejected in `name` and
- * `address` (they end up on an invoice) but allowed in `note`.
+ * `address` (they end up on an invoice), as are Private Use Area glyphs, but
+ * both are allowed in `note`.
  */
 export function parseManualInput(ban: string, body: unknown): Parsed<Omit<ManualRecord, 'updatedAt'>> {
   if (!validateUBN(ban)) return { ok: false, error: 'invalid_ubn' };
@@ -63,7 +68,8 @@ function text(v: unknown, max: number, allowControl: boolean): string | undefine
   if (typeof v !== 'string') return null;
   const t = v.trim();
   if (t === '') return undefined;
-  if (t.length > max || (!allowControl && CONTROL.test(t))) return null;
+  if (t.length > max || LONE_SURROGATE.test(t)) return null;
+  if (!allowControl && (CONTROL.test(t) || PRIVATE_USE.test(t))) return null;
   return t;
 }
 
@@ -87,9 +93,22 @@ const KV_CACHE_TTL = 60;
 /**
  * Read the record for `ban`. A value that doesn't parse (e.g. one written by
  * hand with `wrangler kv key put`) is treated as absent rather than served.
+ * `fresh` skips the 60 s edge cache, so the admin edit form never loads a
+ * record older than the operator's last save.
  */
-export async function getOverride(kv: KVNamespace, ban: string): Promise<ManualRecord | null> {
-  const raw = await kv.get<unknown>(PREFIX + ban, { type: 'json', cacheTtl: KV_CACHE_TTL });
+export async function getOverride(
+  kv: KVNamespace,
+  ban: string,
+  { fresh = false }: { fresh?: boolean } = {},
+): Promise<ManualRecord | null> {
+  let raw: unknown;
+  try {
+    raw = await kv.get<unknown>(PREFIX + ban, fresh ? { type: 'json' } : { type: 'json', cacheTtl: KV_CACHE_TTL });
+  } catch (e) {
+    if (!(e instanceof SyntaxError)) throw e;
+    console.error(`override ${ban} is not JSON; ignoring it`);
+    return null;
+  }
   if (raw === null) return null;
   const parsed = parseManualInput(ban, raw);
   if (!parsed.ok) {
