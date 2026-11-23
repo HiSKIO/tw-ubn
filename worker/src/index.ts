@@ -7,6 +7,7 @@ import {
   type ShardRow,
   type UBNResult,
 } from './lib';
+import { handleAdmin } from './admin';
 import { getOverride, manualResult } from './overrides';
 
 export interface Env {
@@ -45,12 +46,20 @@ const GCIS_TIMEOUT_MS = 3000;
 
 export default {
   async fetch(req: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
-    const cors = corsHeaders(req.headers.get('Origin') ?? '', env.ALLOWED_ORIGINS ?? '*');
+    const url = new URL(req.url);
+    if (url.pathname === '/admin' || url.pathname.startsWith('/admin/')) {
+      if (!env.OVERRIDES) return new Response(null, { status: 404 });
+      return handleAdmin(req, url, {
+        kv: env.OVERRIDES,
+        token: env.ADMIN_TOKEN,
+        officialFound: (ban) => officialFound(ban, env),
+      });
+    }
 
+    const cors = corsHeaders(req.headers.get('Origin') ?? '', env.ALLOWED_ORIGINS ?? '*');
     if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: cors });
     if (req.method !== 'GET') return json({ error: 'method_not_allowed' }, 405, cors);
 
-    const url = new URL(req.url);
     const matched = url.pathname.match(/^\/v1\/vat\/(\d{8})$/);
     const ban = matched?.[1] ?? url.searchParams.get('ban') ?? '';
 
@@ -83,6 +92,18 @@ async function officialResponse(ban: string, env: Env, ctx: ExecutionContext): P
   const res = json(result, 200, {}, cacheable ? cacheTtl : 0);
   if (cacheable) ctx.waitUntil(cache.put(cacheKey, res.clone()));
   return res;
+}
+
+/**
+ * For the admin API: true or false when the official sources answered
+ * authoritatively, null when one was unavailable (a 502, or a found:false
+ * that wouldn't be cached).
+ */
+async function officialFound(ban: string, env: Env): Promise<boolean | null> {
+  const official = await lookupOfficial(ban, env);
+  if (!official.ok) return null;
+  if (official.value.result.found) return true;
+  return official.value.cacheable ? false : null;
 }
 
 /**

@@ -225,3 +225,145 @@ describe('parseManualInput', () => {
     expect(bytes).toBeLessThanOrEqual(1024);
   });
 });
+
+describe('admin API', () => {
+  const TOKEN = 's3cret-token';
+  const call = (env: Env, method: string, path: string, opts: { token?: string | null; body?: unknown } = {}) => {
+    const headers: Record<string, string> = {};
+    const token = opts.token === undefined ? TOKEN : opts.token;
+    if (token !== null) headers.Authorization = `Bearer ${token}`;
+    const body = opts.body === undefined ? undefined : typeof opts.body === 'string' ? opts.body : JSON.stringify(opts.body);
+    return worker.fetch(new Request(`https://w${path}`, { method, headers, body }), { SHARDS: '256', ...env }, ctx);
+  };
+
+  it('adds, serves, and deletes an override end to end', async () => {
+    upstream(FIA_404);
+    const { kv } = memoryKV();
+    const env: Env = { UBN_BUCKET: published([]), OVERRIDES: kv, ADMIN_TOKEN: TOKEN };
+
+    const putRes = await call(env, 'PUT', `/admin/api/overrides/${BAN}`, { body: MANUAL });
+    expect(putRes.status).toBe(200);
+    const saved = (await putRes.json()) as { record: { updatedAt: string } };
+    expect(saved).toMatchObject({ record: { ban: BAN, ...MANUAL }, officialFound: false });
+    expect(Date.parse(saved.record.updatedAt)).not.toBeNaN();
+
+    expect(await (await vat(env)).json()).toMatchObject({ found: true, name: MANUAL.name, source: 'manual' });
+    expect(await (await call(env, 'GET', `/admin/api/overrides/${BAN}`)).json()).toEqual({ record: saved.record });
+
+    const del = await call(env, 'DELETE', `/admin/api/overrides/${BAN}`);
+    expect(del.status).toBe(204);
+    expect(await (await vat(env)).json()).toEqual({ found: false, ban: BAN });
+    expect((await call(env, 'GET', `/admin/api/overrides/${BAN}`)).status).toBe(404);
+    expect((await call(env, 'DELETE', `/admin/api/overrides/${BAN}`)).status).toBe(204);
+  });
+
+  it('reports officialFound true when FIA knows the ban, and null when FIA is down', async () => {
+    const env: Env = { UBN_BUCKET: published([]), OVERRIDES: memoryKV().kv, ADMIN_TOKEN: TOKEN };
+    upstream(FIA_HIT);
+    expect(await (await call(env, 'PUT', `/admin/api/overrides/${BAN}`, { body: MANUAL })).json()).toMatchObject({
+      officialFound: true,
+    });
+    upstream(FIA_DOWN);
+    expect(await (await call(env, 'PUT', `/admin/api/overrides/${BAN}`, { body: MANUAL })).json()).toMatchObject({
+      officialFound: null,
+    });
+  });
+
+  it('lists every override across KV list pages', async () => {
+    upstream(FIA_404);
+    const { kv } = memoryKV(2);
+    const env: Env = { OVERRIDES: kv, ADMIN_TOKEN: TOKEN };
+    for (const [ban, name] of [['22099131', '甲'], ['04595257', '乙'], ['87003412', '丙']]) {
+      expect((await call(env, 'PUT', `/admin/api/overrides/${ban}`, { body: { name } })).status).toBe(200);
+    }
+    const { overrides } = (await (await call(env, 'GET', '/admin/api/overrides')).json()) as {
+      overrides: { ban: string; name: string }[];
+    };
+    expect(overrides.map((o) => [o.ban, o.name])).toEqual([
+      ['04595257', '乙'],
+      ['22099131', '甲'],
+      ['87003412', '丙'],
+    ]);
+  });
+
+  for (const [what, token] of [['a missing', null], ['a wrong', 'nope'], ['a longer', `${TOKEN}x`]] as const) {
+    it(`answers 401 to ${what} token, on every route`, async () => {
+      const { kv, store } = memoryKV();
+      const env: Env = { OVERRIDES: kv, ADMIN_TOKEN: TOKEN };
+      for (const [method, path] of [
+        ['GET', '/admin/api/overrides'],
+        ['GET', `/admin/api/overrides/${BAN}`],
+        ['PUT', `/admin/api/overrides/${BAN}`],
+        ['DELETE', `/admin/api/overrides/${BAN}`],
+      ]) {
+        const res = await call(env, method, path, { token, body: method === 'PUT' ? MANUAL : undefined });
+        expect(res.status, `${method} ${path}`).toBe(401);
+      }
+      expect(store.size).toBe(0);
+    });
+  }
+
+  it('answers 503 on the API but still serves the page when ADMIN_TOKEN is unset or empty', async () => {
+    for (const ADMIN_TOKEN of [undefined, '']) {
+      const env: Env = { OVERRIDES: memoryKV().kv, ADMIN_TOKEN };
+      const res = await call(env, 'GET', '/admin/api/overrides', { token: '' });
+      expect(res.status).toBe(503);
+      expect(await res.json()).toEqual({ error: 'admin_disabled' });
+      expect((await call(env, 'GET', '/admin')).status).toBe(200);
+    }
+  });
+
+  const bad: [string, string, unknown, string][] = [
+    ['a bad checksum', '22099132', MANUAL, 'invalid_ubn'],
+    ['a non-numeric ban', 'abc', MANUAL, 'invalid_ubn'],
+    ['an empty name', BAN, { name: '' }, 'invalid_name'],
+    ['a name over 200 chars', BAN, { name: 'x'.repeat(201) }, 'invalid_name'],
+    ['an unknown kind', BAN, { name: 'x', kind: 'clinic' }, 'invalid_kind'],
+    ['a body that is not JSON', BAN, '{name:', 'invalid_body'],
+  ];
+  for (const [what, ban, body, error] of bad) {
+    it(`answers 400 ${error} to a PUT with ${what}`, async () => {
+      const { kv, store } = memoryKV();
+      const res = await call({ OVERRIDES: kv, ADMIN_TOKEN: TOKEN }, 'PUT', `/admin/api/overrides/${ban}`, { body });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({ error });
+      expect(store.size).toBe(0);
+    });
+  }
+
+  it('serves the admin page as HTML without CORS headers', async () => {
+    const res = await call({ OVERRIDES: memoryKV().kv, ADMIN_TOKEN: TOKEN }, 'GET', '/admin', { token: null });
+    expect(res.status).toBe(200);
+    expect(res.headers.get('Content-Type')).toMatch(/^text\/html/);
+    expect(res.headers.get('Access-Control-Allow-Origin')).toBeNull();
+    expect(await res.text()).toContain('統編手動資料');
+  });
+});
+
+describe('without the OVERRIDES binding', () => {
+  it('404s every /admin route, even with a token', async () => {
+    for (const [method, path] of [
+      ['GET', '/admin'],
+      ['GET', '/admin/api/overrides'],
+      ['PUT', `/admin/api/overrides/${BAN}`],
+    ]) {
+      const res = await worker.fetch(
+        new Request(`https://w${path}`, {
+          method,
+          headers: { Authorization: 'Bearer t' },
+          body: method === 'PUT' ? '{}' : undefined,
+        }),
+        { ADMIN_TOKEN: 't' },
+        ctx,
+      );
+      expect(res.status, `${method} ${path}`).toBe(404);
+    }
+  });
+
+  it('answers a miss as found:false, cached as before', async () => {
+    upstream(FIA_404);
+    const res = await vat({ UBN_BUCKET: published([]) });
+    expect(await res.json()).toEqual({ found: false, ban: BAN });
+    expect(res.headers.get('Cache-Control')).toBe('public, max-age=86400');
+  });
+});
