@@ -54,39 +54,13 @@ export default {
     const cached = await cache.match(cacheKey);
     if (cached) return withCors(cached, cors);
 
-    const ttl = Number(env.CACHE_TTL ?? '86400');
-    const dataset = await fromDataset(ban, env);
-    let result: UBNResult;
-    let cacheable: boolean;
-    let cacheTtl = ttl;
-    if (dataset.ok && dataset.value) {
-      result = dataset.value;
-      cacheable = true;
-    } else {
-      const fia = await fromFia(ban);
-      if (!fia.ok) {
-        // No authoritative answer: a found:false here would read as "no such
-        // business" to the caller. Say so explicitly and never cache it.
-        return json({ found: null, ban, error: 'upstream_unavailable' }, 502, cors);
-      }
-      result = fia.value;
-      // A "not found" is authoritative only if the dataset read was too; when
-      // the dataset read failed the ban may just be in the unread shard, so
-      // don't pin found:false in the cache for a day.
-      cacheable = fia.value.found || dataset.ok;
-      if (!fia.value.found) {
-        // Not in the tax registry: GCIS may still know the company, closed
-        // (解散/廢止 …, so the caller can say why) or live but unregistered
-        // for tax. GCIS is an enhancement, so its failure never 502s; it only
-        // keeps the FIA-derived found:false out of the cache.
-        const gcis = await fromGcis(ban);
-        if (!gcis.ok) cacheable = false;
-        else if (gcis.value) result = gcis.value;
-        // An empty body is GCIS's "no such company" but also its outage mode:
-        // cache that found:false only briefly.
-        else if (gcis.empty) cacheTtl = Math.min(ttl, Number(env.NEGATIVE_CACHE_TTL ?? '3600'));
-      }
+    const official = await lookupOfficial(ban, env);
+    if (!official.ok) {
+      // No authoritative answer: a found:false here would read as "no such
+      // business" to the caller. Say so explicitly and never cache it.
+      return json({ found: null, ban, error: 'upstream_unavailable' }, 502, cors);
     }
+    const { result, cacheable, cacheTtl } = official.value;
     // Cache the response CORS-free (the key is origin-independent and shared by
     // all origins), then apply the caller's CORS per request. This keeps any
     // one origin's allow header out of the shared cache at the source.
@@ -95,6 +69,47 @@ export default {
     return withCors(res, cors);
   },
 };
+
+/** The official answer, and whether it is authoritative enough to cache. */
+interface Official {
+  result: UBNResult;
+  cacheable: boolean;
+  cacheTtl: number;
+}
+
+/**
+ * Dataset, then FIA, then GCIS, uncached. `{ ok: false }` means FIA was
+ * unavailable, so there is no answer at all.
+ */
+async function lookupOfficial(ban: string, env: Env): Promise<Lookup<Official>> {
+  const ttl = Number(env.CACHE_TTL ?? '86400');
+  const dataset = await fromDataset(ban, env);
+  if (dataset.ok && dataset.value) {
+    return { ok: true, value: { result: dataset.value, cacheable: true, cacheTtl: ttl } };
+  }
+
+  const fia = await fromFia(ban);
+  if (!fia.ok) return { ok: false };
+  let result = fia.value;
+  let cacheTtl = ttl;
+  // A "not found" is authoritative only if the dataset read was too; when
+  // the dataset read failed the ban may just be in the unread shard, so
+  // don't pin found:false in the cache for a day.
+  let cacheable = fia.value.found || dataset.ok;
+  if (!fia.value.found) {
+    // Not in the tax registry: GCIS may still know the company, closed
+    // (解散/廢止 …, so the caller can say why) or live but unregistered
+    // for tax. GCIS is an enhancement, so its failure never 502s; it only
+    // keeps the FIA-derived found:false out of the cache.
+    const gcis = await fromGcis(ban);
+    if (!gcis.ok) cacheable = false;
+    else if (gcis.value) result = gcis.value;
+    // An empty body is GCIS's "no such company" but also its outage mode:
+    // cache that found:false only briefly.
+    else if (gcis.empty) cacheTtl = Math.min(ttl, Number(env.NEGATIVE_CACHE_TTL ?? '3600'));
+  }
+  return { ok: true, value: { result, cacheable, cacheTtl } };
+}
 
 /**
  * A lookup that either produced an authoritative answer (`ok: true`) or failed
