@@ -7,6 +7,7 @@ import {
   type ShardRow,
   type UBNResult,
 } from './lib';
+import { getOverride, manualResult } from './overrides';
 
 export interface Env {
   /** R2 bucket holding the published dataset. Optional; falls back to FIA. */
@@ -27,6 +28,14 @@ export interface Env {
    * an empty body (see `fromGcis`). Default 3600; capped at CACHE_TTL.
    */
   NEGATIVE_CACHE_TTL?: string;
+  /**
+   * Operator-entered records (`ban:<ban>` -> ManualRecord), served when the
+   * official answer is found:false or unavailable. Optional; unbound, the
+   * Worker behaves as without it and `/admin` is a 404.
+   */
+  OVERRIDES?: KVNamespace;
+  /** Bearer token for `/admin/api/*`. Unset or empty disables the admin API. */
+  ADMIN_TOKEN?: string;
 }
 
 const FIA_API = 'https://eip.fia.gov.tw/OAI/api/businessRegistration';
@@ -49,26 +58,53 @@ export default {
       return json({ found: false, ban, error: 'invalid_ubn' }, 400, cors);
     }
 
-    const cache = caches.default;
-    const cacheKey = new Request(`https://cache.tw-ubn/v1/vat/${ban}`);
-    const cached = await cache.match(cacheKey);
-    if (cached) return withCors(cached, cors);
-
-    const official = await lookupOfficial(ban, env);
-    if (!official.ok) {
-      // No authoritative answer: a found:false here would read as "no such
-      // business" to the caller. Say so explicitly and never cache it.
-      return json({ found: null, ban, error: 'upstream_unavailable' }, 502, cors);
-    }
-    const { result, cacheable, cacheTtl } = official.value;
-    // Cache the response CORS-free (the key is origin-independent and shared by
-    // all origins), then apply the caller's CORS per request. This keeps any
-    // one origin's allow header out of the shared cache at the source.
-    const res = json(result, 200, {}, cacheable ? cacheTtl : 0);
-    if (cacheable) ctx.waitUntil(cache.put(cacheKey, res.clone()));
-    return withCors(res, cors);
+    const res = await officialResponse(ban, env, ctx);
+    return withCors(env.OVERRIDES ? await overlayManual(res, ban, env.OVERRIDES) : res, cors);
   },
 };
+
+/** The official answer as a CORS-free response, from the edge cache when it has one. */
+async function officialResponse(ban: string, env: Env, ctx: ExecutionContext): Promise<Response> {
+  const cache = caches.default;
+  const cacheKey = new Request(`https://cache.tw-ubn/v1/vat/${ban}`);
+  const cached = await cache.match(cacheKey);
+  if (cached) return cached;
+
+  const official = await lookupOfficial(ban, env);
+  if (!official.ok) {
+    // No authoritative answer: a found:false here would read as "no such
+    // business" to the caller. Say so explicitly and never cache it.
+    return json({ found: null, ban, error: 'upstream_unavailable' }, 502, {});
+  }
+  const { result, cacheable, cacheTtl } = official.value;
+  // Cache the response CORS-free (the key is origin-independent and shared by
+  // all origins), then apply the caller's CORS per request. This keeps any
+  // one origin's allow header out of the shared cache at the source.
+  const res = json(result, 200, {}, cacheable ? cacheTtl : 0);
+  if (cacheable) ctx.waitUntil(cache.put(cacheKey, res.clone()));
+  return res;
+}
+
+/**
+ * Replace an official found:false or 502 with the operator's record, if any.
+ * Applied after the cache on purpose: a found:false cached for a day still
+ * picks up an override within KV's 60 s read cache, and the manual answer is
+ * never cached, so deleting it takes effect just as fast.
+ */
+async function overlayManual(res: Response, ban: string, kv: KVNamespace): Promise<Response> {
+  if (res.status !== 200 && res.status !== 502) return res;
+  try {
+    if (res.status === 200) {
+      const { found } = (await res.clone().json()) as { found?: unknown };
+      if (found !== false) return res;
+    }
+    const rec = await getOverride(kv, ban);
+    return rec ? json(manualResult(rec), 200, {}) : res;
+  } catch (e) {
+    console.error('override lookup failed; serving the official answer', e);
+    return res;
+  }
+}
 
 /** The official answer, and whether it is authoritative enough to cache. */
 interface Official {
