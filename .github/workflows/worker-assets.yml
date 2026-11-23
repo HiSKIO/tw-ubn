@@ -70,7 +70,18 @@ jobs:
           fi
           echo "SHARDS=$WANT" >> "$GITHUB_ENV"
 
+      # ADMIN_TOKEN is optional: unset, the deploy leaves the Worker's existing
+      # secret alone (--secrets-file only adds or replaces the secrets it names).
       - name: Deploy
         if: steps.gate.outputs.run == 'true'
         working-directory: worker
-        run: npx -y wrangler@4 deploy --config wrangler.assets.jsonc --var "SHARDS:$SHARDS"
+        env:
+          ADMIN_TOKEN: ${{ secrets.ADMIN_TOKEN }}
+        run: |
+          args=(--config wrangler.assets.jsonc --var "SHARDS:$SHARDS")
+          if [ -n "$ADMIN_TOKEN" ]; then
+            secrets="$RUNNER_TEMP/worker-secrets.json"
+            jq -n --arg t "$ADMIN_TOKEN" '{ADMIN_TOKEN: $t}' > "$secrets"
+            args+=(--secrets-file "$secrets")
+          fi
+          npx -y wrangler@4 deploy "${args[@]}"

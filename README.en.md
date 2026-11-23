@@ -157,9 +157,11 @@ is never returned.
 
 Only the Static Assets variant (`worker/wrangler.assets.jsonc`) configures it.
 Setup steps are in the [Chinese README](README.md#手動補登source-manual):
-deploy once so wrangler 4 creates the `tw-ubn-overrides` KV namespace, then run
+deploy once so wrangler 4 creates the `tw-ubn-overrides` KV namespace, then set
+the admin token, either as the repo secret `ADMIN_TOKEN` (the deploy workflow
+uploads it on every run) or with
 `npx wrangler@4 secret put ADMIN_TOKEN --config wrangler.assets.jsonc` in
-`worker/` and open `https://<your-worker>/admin`.
+`worker/`, and open `https://<your-worker>/admin`.
 
 ## One-click lookup service (two versions)
 
