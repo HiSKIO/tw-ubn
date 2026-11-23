@@ -15,5 +15,9 @@
   },
   // Requests for an existing file (shards/<n>.json, latest.json) are served
   // without running the Worker and are not billed; everything else reaches it.
-  "assets": { "directory": "./public", "binding": "ASSETS" }
+  "assets": { "directory": "./public", "binding": "ASSETS" },
+  // Manual overrides edited at /admin. No id on purpose: wrangler 4 creates the
+  // namespace (tw-ubn-overrides) on the first deploy and reuses the deployed
+  // Worker's binding on every later one, so the daily redeploy keeps the data.
+  "kv_namespaces": [{ "binding": "OVERRIDES" }]
 }

@@ -11,6 +11,7 @@ tmp/
 # Rust
 /target
 .wrangler/
+.dev.vars*
 
 # Filled by worker-assets.yml at deploy time
 /worker/public/*

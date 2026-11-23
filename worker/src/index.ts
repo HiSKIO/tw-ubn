@@ -7,6 +7,8 @@ import {
   type ShardRow,
   type UBNResult,
 } from './lib';
+import { handleAdmin } from './admin';
+import { getOverride, manualResult } from './overrides';
 
 export interface Env {
   /** R2 bucket holding the published dataset. Optional; falls back to FIA. */
@@ -27,6 +29,14 @@ export interface Env {
    * an empty body (see `fromGcis`). Default 3600; capped at CACHE_TTL.
    */
   NEGATIVE_CACHE_TTL?: string;
+  /**
+   * Operator-entered records (`ban:<ban>` -> ManualRecord), served when the
+   * official answer is found:false or unavailable. Optional; unbound, the
+   * Worker behaves as without it and `/admin` is a 404.
+   */
+  OVERRIDES?: KVNamespace;
+  /** Bearer token for `/admin/api/*`. Unset or empty disables the admin API. */
+  ADMIN_TOKEN?: string;
 }
 
 const FIA_API = 'https://eip.fia.gov.tw/OAI/api/businessRegistration';
@@ -36,12 +46,20 @@ const GCIS_TIMEOUT_MS = 3000;
 
 export default {
   async fetch(req: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
-    const cors = corsHeaders(req.headers.get('Origin') ?? '', env.ALLOWED_ORIGINS ?? '*');
+    const url = new URL(req.url);
+    if (url.pathname === '/admin' || url.pathname.startsWith('/admin/')) {
+      if (!env.OVERRIDES) return new Response(null, { status: 404 });
+      return handleAdmin(req, url, {
+        kv: env.OVERRIDES,
+        token: env.ADMIN_TOKEN,
+        officialFound: (ban) => officialFound(ban, env),
+      });
+    }
 
+    const cors = corsHeaders(req.headers.get('Origin') ?? '', env.ALLOWED_ORIGINS ?? '*');
     if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: cors });
     if (req.method !== 'GET') return json({ error: 'method_not_allowed' }, 405, cors);
 
-    const url = new URL(req.url);
     const matched = url.pathname.match(/^\/v1\/vat\/(\d{8})$/);
     const ban = matched?.[1] ?? url.searchParams.get('ban') ?? '';
 
@@ -49,52 +67,106 @@ export default {
       return json({ found: false, ban, error: 'invalid_ubn' }, 400, cors);
     }
 
-    const cache = caches.default;
-    const cacheKey = new Request(`https://cache.tw-ubn/v1/vat/${ban}`);
-    const cached = await cache.match(cacheKey);
-    if (cached) return withCors(cached, cors);
-
-    const ttl = Number(env.CACHE_TTL ?? '86400');
-    const dataset = await fromDataset(ban, env);
-    let result: UBNResult;
-    let cacheable: boolean;
-    let cacheTtl = ttl;
-    if (dataset.ok && dataset.value) {
-      result = dataset.value;
-      cacheable = true;
-    } else {
-      const fia = await fromFia(ban);
-      if (!fia.ok) {
-        // No authoritative answer: a found:false here would read as "no such
-        // business" to the caller. Say so explicitly and never cache it.
-        return json({ found: null, ban, error: 'upstream_unavailable' }, 502, cors);
-      }
-      result = fia.value;
-      // A "not found" is authoritative only if the dataset read was too; when
-      // the dataset read failed the ban may just be in the unread shard, so
-      // don't pin found:false in the cache for a day.
-      cacheable = fia.value.found || dataset.ok;
-      if (!fia.value.found) {
-        // Not in the tax registry: GCIS may still know the company, closed
-        // (解散/廢止 …, so the caller can say why) or live but unregistered
-        // for tax. GCIS is an enhancement, so its failure never 502s; it only
-        // keeps the FIA-derived found:false out of the cache.
-        const gcis = await fromGcis(ban);
-        if (!gcis.ok) cacheable = false;
-        else if (gcis.value) result = gcis.value;
-        // An empty body is GCIS's "no such company" but also its outage mode:
-        // cache that found:false only briefly.
-        else if (gcis.empty) cacheTtl = Math.min(ttl, Number(env.NEGATIVE_CACHE_TTL ?? '3600'));
-      }
-    }
-    // Cache the response CORS-free (the key is origin-independent and shared by
-    // all origins), then apply the caller's CORS per request. This keeps any
-    // one origin's allow header out of the shared cache at the source.
-    const res = json(result, 200, {}, cacheable ? cacheTtl : 0);
-    if (cacheable) ctx.waitUntil(cache.put(cacheKey, res.clone()));
-    return withCors(res, cors);
+    const res = await officialResponse(ban, env, ctx);
+    return withCors(env.OVERRIDES ? await overlayManual(res, ban, env.OVERRIDES) : res, cors);
   },
 };
+
+/** The official answer as a CORS-free response, from the edge cache when it has one. */
+async function officialResponse(ban: string, env: Env, ctx: ExecutionContext): Promise<Response> {
+  const cache = caches.default;
+  const cacheKey = new Request(`https://cache.tw-ubn/v1/vat/${ban}`);
+  const cached = await cache.match(cacheKey);
+  if (cached) return cached;
+
+  const official = await lookupOfficial(ban, env);
+  if (!official.ok) {
+    // No authoritative answer: a found:false here would read as "no such
+    // business" to the caller. Say so explicitly and never cache it.
+    return json({ found: null, ban, error: 'upstream_unavailable' }, 502, {});
+  }
+  const { result, cacheable, cacheTtl } = official.value;
+  // Cache the response CORS-free (the key is origin-independent and shared by
+  // all origins), then apply the caller's CORS per request. This keeps any
+  // one origin's allow header out of the shared cache at the source.
+  const res = json(result, 200, {}, cacheable ? cacheTtl : 0);
+  if (cacheable) ctx.waitUntil(cache.put(cacheKey, res.clone()));
+  return res;
+}
+
+/**
+ * For the admin API: true or false when the official sources answered
+ * authoritatively, null when one was unavailable (a 502, or a found:false
+ * that wouldn't be cached).
+ */
+async function officialFound(ban: string, env: Env): Promise<boolean | null> {
+  const official = await lookupOfficial(ban, env);
+  if (!official.ok) return null;
+  if (official.value.result.found) return true;
+  return official.value.cacheable ? false : null;
+}
+
+/**
+ * Replace an official found:false or 502 with the operator's record, if any.
+ * Applied after the cache on purpose: a found:false cached for a day still
+ * picks up an override within KV's 60 s read cache, and the manual answer is
+ * never cached, so deleting it takes effect just as fast.
+ */
+async function overlayManual(res: Response, ban: string, kv: KVNamespace): Promise<Response> {
+  if (res.status !== 200 && res.status !== 502) return res;
+  try {
+    if (res.status === 200) {
+      const { found } = (await res.clone().json()) as { found?: unknown };
+      if (found !== false) return res;
+    }
+    const rec = await getOverride(kv, ban);
+    return rec ? json(manualResult(rec), 200, {}) : res;
+  } catch (e) {
+    console.error('override lookup failed; serving the official answer', e);
+    return res;
+  }
+}
+
+/** The official answer, and whether it is authoritative enough to cache. */
+interface Official {
+  result: UBNResult;
+  cacheable: boolean;
+  cacheTtl: number;
+}
+
+/**
+ * Dataset, then FIA, then GCIS, uncached. `{ ok: false }` means FIA was
+ * unavailable, so there is no answer at all.
+ */
+async function lookupOfficial(ban: string, env: Env): Promise<Lookup<Official>> {
+  const ttl = Number(env.CACHE_TTL ?? '86400');
+  const dataset = await fromDataset(ban, env);
+  if (dataset.ok && dataset.value) {
+    return { ok: true, value: { result: dataset.value, cacheable: true, cacheTtl: ttl } };
+  }
+
+  const fia = await fromFia(ban);
+  if (!fia.ok) return { ok: false };
+  let result = fia.value;
+  let cacheTtl = ttl;
+  // A "not found" is authoritative only if the dataset read was too; when
+  // the dataset read failed the ban may just be in the unread shard, so
+  // don't pin found:false in the cache for a day.
+  let cacheable = fia.value.found || dataset.ok;
+  if (!fia.value.found) {
+    // Not in the tax registry: GCIS may still know the company, closed
+    // (解散/廢止 …, so the caller can say why) or live but unregistered
+    // for tax. GCIS is an enhancement, so its failure never 502s; it only
+    // keeps the FIA-derived found:false out of the cache.
+    const gcis = await fromGcis(ban);
+    if (!gcis.ok) cacheable = false;
+    else if (gcis.value) result = gcis.value;
+    // An empty body is GCIS's "no such company" but also its outage mode:
+    // cache that found:false only briefly.
+    else if (gcis.empty) cacheTtl = Math.min(ttl, Number(env.NEGATIVE_CACHE_TTL ?? '3600'));
+  }
+  return { ok: true, value: { result, cacheable, cacheTtl } };
+}
 
 /**
  * A lookup that either produced an authoritative answer (`ok: true`) or failed

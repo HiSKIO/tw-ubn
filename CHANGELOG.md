@@ -26,6 +26,11 @@ ship when merged to `main`.
   Workers Static Assets (`ASSETS` binding, `wrangler.assets.jsonc`), and the
   `worker-assets.yml` workflow deploys the newest `data-YYYYMMDD` release's
   shards daily.
+- Manual overrides in `worker/`: with the `OVERRIDES` KV namespace bound, an
+  operator registers titles for UBNs no public source carries at `/admin`
+  (bearer `ADMIN_TOKEN`), and `/v1/vat/:ban` answers them with
+  `source: "manual"` when the official answer is `found: false` or a 502.
+  `lookupTitle` and the Ruby gem accept the new `manual` source.
 
 ## [0.2.0] - 2026-10-29
 

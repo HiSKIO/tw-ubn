@@ -81,7 +81,8 @@ export interface UBNResult {
   kind?: RegistryKind;
   /** Carried from the shard; only ever `true`. See `ShardRow.nameHasPrivateUse`. */
   nameHasPrivateUse?: true;
-  source?: 'dataset' | 'fia-api' | 'gcis';
+  /** `manual` is an operator-entered override, served only when no official source knows the ban. */
+  source?: 'dataset' | 'fia-api' | 'gcis' | 'manual';
   /** GCIS only: the raw `Company_Status_Desc`, e.g. 核准設立 / 解散. */
   companyStatus?: string;
   /** GCIS only: termination date (ISO) when `status` is `closed`, else null. */
