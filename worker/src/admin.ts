@@ -129,9 +129,10 @@ const PAGE = `<!doctype html>
   table { width: 100%; border-collapse: collapse; }
   th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--line); vertical-align: top; }
   td.ban { font-variant-numeric: tabular-nums; white-space: nowrap; }
-  td.when { color: var(--muted); font-size: .875rem; white-space: nowrap; }
-  td.act { white-space: nowrap; }
-  td.act button { padding: 4px 10px; }
+  td.name { width: 100%; overflow-wrap: anywhere; }
+  .when { color: var(--muted); font-size: .875rem; }
+  td.act button { display: block; width: 100%; padding: 4px 10px; white-space: nowrap; }
+  td.act button + button { margin-top: 6px; }
   #empty { color: var(--muted); }
 </style>
 </head>
@@ -184,7 +185,7 @@ const PAGE = `<!doctype html>
     <div class="row" style="margin-top:0;margin-bottom:8px"><button id="reload" type="button">重新整理</button></div>
     <div class="table">
       <table>
-        <thead><tr><th>統編</th><th>抬頭</th><th>更新時間</th><th></th></tr></thead>
+        <thead><tr><th>統編</th><th>抬頭／更新時間</th><th></th></tr></thead>
         <tbody id="rows"></tbody>
       </table>
     </div>
@@ -249,12 +250,18 @@ const PAGE = `<!doctype html>
     rows.sort(function (a, b) { return a.ban < b.ban ? -1 : a.ban > b.ban ? 1 : 0; });
     rows.forEach(function (r) {
       var tr = document.createElement('tr');
-      [['ban', r.ban], ['', r.name], ['when', when(r.updatedAt)]].forEach(function (c) {
-        var td = document.createElement('td');
-        if (c[0]) td.className = c[0];
-        td.textContent = c[1];
-        tr.appendChild(td);
-      });
+      var banTd = document.createElement('td');
+      banTd.className = 'ban';
+      banTd.textContent = r.ban;
+      var nameTd = document.createElement('td');
+      nameTd.className = 'name';
+      nameTd.textContent = r.name;
+      var at = document.createElement('div');
+      at.className = 'when';
+      at.textContent = when(r.updatedAt);
+      nameTd.appendChild(at);
+      tr.appendChild(banTd);
+      tr.appendChild(nameTd);
       var act = document.createElement('td');
       act.className = 'act';
       var edit = document.createElement('button');
@@ -263,7 +270,7 @@ const PAGE = `<!doctype html>
       var del = document.createElement('button');
       del.type = 'button'; del.className = 'danger'; del.textContent = '刪除';
       del.onclick = function () { deleteRow(r.ban, r.name); };
-      act.appendChild(edit); act.appendChild(document.createTextNode(' ')); act.appendChild(del);
+      act.appendChild(edit); act.appendChild(del);
       tr.appendChild(act);
       tbody.appendChild(tr);
     });
