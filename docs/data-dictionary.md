@@ -248,6 +248,31 @@ absence from every source:
 Either way it does **not** mean "this UBN does not exist". Integrators should
 treat it as a hint and let the buyer type the title.
 
+### Manual overrides fill misses only
+
+A deployment can close part of this gap by hand. With the `OVERRIDES` KV
+namespace bound (the Static Assets config binds it), an operator registers a
+UBN's title at `/admin`, and the Worker answers it with `source: "manual"`:
+
+- The record is consulted only after the official answer is known, and only
+  when that answer is `found: false` or `502 upstream_unavailable`. A dataset,
+  FIA or GCIS hit is returned unchanged.
+- The official answer is cached as before. The manual answer is not cached; the
+  KV read is cached for 60 seconds, so an added or deleted override takes effect
+  within about a minute, even over a cached `found: false`.
+- A manual answer carries `name`, and `address` and `kind` when entered. It has
+  no `useInvoice`, `status` or `setupDate`: the operator doesn't know them, and a
+  missing field means unknown. The operator's note is never returned.
+- KV holds one key per UBN, `ban:<ban>`, whose value is the record as JSON
+  (`ban`, `name`, `kind`, `address`, `note`, `updatedAt`) and whose metadata is
+  `{name, updatedAt}` for the list view. Names are at most 200 characters with no
+  control characters, so the metadata stays under KV's 1024-byte limit.
+- Only lookups through the Worker see overrides. `lookupVAT` reads the shards
+  directly and never does.
+
+Setup (KV namespace, `ADMIN_TOKEN` secret) is in the README's
+"手動補登" section.
+
 ### Valid UBNs with no public source (measured 2026-10-29, [#8](https://github.com/paid-tw/tw-ubn/issues/8))
 
 From one real checkout system's 39,509 distinct UBNs, 2,739 (6.9%) had a valid

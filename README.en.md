@@ -116,7 +116,7 @@ The Worker's `/v1/vat/:ban` answers in one of four ways:
 
 | Response | Meaning | What checkout should do |
 |---|---|---|
-| `200 { "found": true, … }` | Found. `source` is `dataset` / `fia-api` / `gcis`; `status` is optional (`active` / `suspended` / `closed`) and absent on FIA-API hits and live GCIS companies — **missing means unknown, not active** | Fill in `name`; `suspended` and `closed` deserve a hint. Don't autofill a name flagged `nameHasPrivateUse` |
+| `200 { "found": true, … }` | Found. `source` is `dataset` / `fia-api` / `gcis`, or `manual` for an operator-entered record (see below); `status` is optional (`active` / `suspended` / `closed`) and absent on FIA-API hits and live GCIS companies — **missing means unknown, not active** | Fill in `name`; `suspended` and `closed` deserve a hint. Don't autofill a name flagged `nameHasPrivateUse` |
 | `200 { "found": false }` | **No source returned a record**: the dataset, FIA and GCIS had nothing (if one of them failed, only the others were consulted) | A hint at most; let the buyer type the title. **Don't** block checkout |
 | `400 { "error": "invalid_ubn" }` | Bad checksum — the UBN is certainly mistyped | Ask the buyer to check it |
 | `502 { "found": null, "error": "upstream_unavailable" }` | Upstream outage — **no answer** | Treat as not looked up; show nothing |
@@ -135,6 +135,31 @@ Conversely, the `% 5` checksum doesn't catch every single-digit typo, so
 `found: false` can also be a typo — which is exactly why it works as a
 "please double-check" hint rather than an error. Categories and measurements:
 [`docs/data-dictionary.md`](docs/data-dictionary.md#coverage-gaps-found-false-is-not-an-invalid-ubn).
+
+### Manual overrides (`source: "manual"`)
+
+An operator can register the title of a valid UBN that no public source carries
+on the Worker's `/admin` page. `/v1/vat/:ban` then answers `found: true`,
+`source: "manual"` with `name`, plus `address` and `kind` when entered. It
+carries no `useInvoice` or `status` (missing means unknown). The operator's note
+is never returned.
+
+- **Misses only.** When the dataset, FIA or GCIS knows the UBN, the official
+  answer is returned and the manual record is ignored. The manual record is
+  served only when the official answer is `found: false` or
+  `502 upstream_unavailable`.
+- **Live within about 60 seconds.** The manual answer is never edge-cached, so
+  adding, changing or deleting one takes effect within about 60 seconds, even
+  where a `found: false` was cached.
+- **Stored in Workers KV**, not in the shards, so the daily redeploy keeps it.
+- **Worker lookups only.** `lookupTitle` and the Ruby `lookup_title` receive
+  `manual`; `lookupVAT` reads the shards directly and never sees overrides.
+
+Only the Static Assets variant (`worker/wrangler.assets.jsonc`) configures it.
+Setup steps are in the [Chinese README](README.md#手動補登source-manual):
+deploy once so wrangler 4 creates the `tw-ubn-overrides` KV namespace, then run
+`npx wrangler@4 secret put ADMIN_TOKEN --config wrangler.assets.jsonc` in
+`worker/` and open `https://<your-worker>/admin`.
 
 ## One-click lookup service (two versions)
 

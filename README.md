@@ -103,7 +103,7 @@ Worker 的 `/v1/vat/:ban` 有四種回應：
 
 | 回應 | 意思 | 結帳端建議 |
 |---|---|---|
-| `200 { "found": true, … }` | 找到。`source` 為 `dataset`／`fia-api`／`gcis`；`status`（選用）為 `active`／`suspended`／`closed`，FIA 單筆 API 與存續中的 GCIS 公司不帶，**缺值代表未知，不是營業中** | 帶入 `name`；`suspended`、`closed` 可提示買家。名稱含 `nameHasPrivateUse` 時不要自動帶入 |
+| `200 { "found": true, … }` | 找到。`source` 為 `dataset`／`fia-api`／`gcis`，或手動補登的 `manual`（見下方）；`status`（選用）為 `active`／`suspended`／`closed`，FIA 單筆 API 與存續中的 GCIS 公司不帶，**缺值代表未知，不是營業中** | 帶入 `name`；`suspended`、`closed` 可提示買家。名稱含 `nameHasPrivateUse` 時不要自動帶入 |
 | `200 { "found": false }` | **沒有任何來源回傳這個統編**：資料集、FIA 與 GCIS 都沒有紀錄（某個來源讀取失敗時，只代表其餘來源沒有） | 只當提示，讓買家自己填抬頭；**不要**擋下結帳 |
 | `400 { "error": "invalid_ubn" }` | 檢查碼錯誤，統編一定打錯 | 請買家確認統編 |
 | `502 { "found": null, "error": "upstream_unavailable" }` | 上游故障，**沒有答案** | 當作沒查，不顯示任何提示 |
@@ -117,6 +117,35 @@ Worker 的 `/v1/vat/:ban` 有四種回應：
 反過來，`% 5` 檢查碼也擋不住所有打錯一位數的情況，所以 `found: false` 也可能是打錯——這正是
 為什麼它適合當「請再確認一次」的提示，而不是錯誤。分類與量測細節見
 [`docs/data-dictionary.md`](docs/data-dictionary.md#coverage-gaps-found-false-is-not-an-invalid-ubn)。
+
+### 手動補登（`source: "manual"`）
+
+查不到公開資料的合法統編，可以由營運人員在 Worker 的 `/admin` 頁面手動登記抬頭。之後
+`/v1/vat/:ban` 會回 `found: true`、`source: "manual"`，帶 `name`，以及登記時填的 `address`、
+`kind`。手動資料不帶 `useInvoice` 與 `status`（缺值代表未知），備註只給管理者看，不會出現在查詢結果。
+
+- **只補查無**：官方來源（資料集、FIA、GCIS）查得到的統編，一律回官方資料，手動資料不會被使用。
+  只有官方結果是 `found: false` 或 `502 upstream_unavailable` 時，才改回手動資料。
+- **約 60 秒生效**：手動結果不進邊緣快取，所以新增、修改、刪除都在約 60 秒內生效，
+  就算這個統編的 `found: false` 已經被快取。
+- **資料放在 Workers KV**，不在分片裡，每天重新部署分片不會覆蓋。
+- **只有走 Worker 的查詢看得到**：`lookupTitle` 與 Ruby 的 `lookup_title` 會收到 `manual`；
+  `lookupVAT` 直接讀分片，看不到手動資料。
+
+目前只有 Static Assets 版（`worker/wrangler.assets.jsonc`）設定了這個功能。設定步驟：
+
+1. 部署一次（手動執行 **Deploy free Worker (Static Assets)** workflow，或在 `worker/` 執行
+   `npx wrangler@4 deploy --config wrangler.assets.jsonc`）。wrangler 4 會自動建立 KV namespace
+   `tw-ubn-overrides`，之後每次部署沿用同一個。API token 需要 Workers KV Storage 的編輯權限。
+   想自己建立的話，執行 `npx wrangler@4 kv namespace create tw-ubn-overrides`，再把 `id` 填進
+   `wrangler.assets.jsonc` 的 `OVERRIDES` binding。
+2. 設定管理權杖：在 `worker/` 執行
+   `npx wrangler@4 secret put ADMIN_TOKEN --config wrangler.assets.jsonc`，輸入一個夠長的隨機字串。
+3. 打開 `https://<你的worker>/admin`，貼上權杖即可新增、編輯、刪除。
+
+沒有設定 `ADMIN_TOKEN` 時，管理 API 回 `503`。沒有綁定 `OVERRIDES` 時，`/admin` 一律回 `404`，
+查詢行為跟沒有這個功能時完全相同。本機開發時把 `ADMIN_TOKEN=…` 寫在 `worker/.dev.vars`
+（已在 `.gitignore`），`wrangler dev --config wrangler.assets.jsonc` 會用本機模擬的 KV。
 
 ## 一鍵部署查詢服務（兩個版本）
 
