@@ -209,6 +209,10 @@ describe('parseManualInput', () => {
     ['an address over 300 chars', BAN, { name: 'x', address: 'a'.repeat(301) }],
     ['a note over 500 chars', BAN, { name: 'x', note: 'a'.repeat(501) }],
     ['a non-string note', BAN, { name: 'x', note: 1 }],
+    ['a name with a Private Use Area glyph', BAN, { name: '王\uE000明會計師事務所' }],
+    ['an address with a Private Use Area glyph', BAN, { name: 'x', address: '臺北市\uE000' }],
+    ['a name with a lone surrogate', BAN, { name: 'a\uD800b' }],
+    ['a note with a lone surrogate', BAN, { name: 'x', note: '\uDC00' }],
   ];
   for (const [what, ban, body] of invalid) {
     it(`rejects ${what}`, () => {
@@ -267,6 +271,48 @@ describe('admin API', () => {
     expect(await (await call(env, 'PUT', `/admin/api/overrides/${BAN}`, { body: MANUAL })).json()).toMatchObject({
       officialFound: null,
     });
+  });
+
+  it('reads the edited record past the KV edge cache, so a re-edit never loads a stale copy', async () => {
+    const { kv, gets } = await seeded();
+    const res = await call({ OVERRIDES: kv, ADMIN_TOKEN: TOKEN }, 'GET', `/admin/api/overrides/${BAN}`);
+    expect(res.status).toBe(200);
+    expect(gets).toEqual([{ key: `ban:${BAN}`, opts: { type: 'json' } }]);
+  });
+
+  it('answers 404, not a 500, for a KV value that is not JSON', async () => {
+    const { kv, store } = memoryKV();
+    store.set(`ban:${BAN}`, { value: 'abc' });
+    const env: Env = { UBN_BUCKET: published([]), OVERRIDES: kv, ADMIN_TOKEN: TOKEN };
+    expect((await call(env, 'GET', `/admin/api/overrides/${BAN}`)).status).toBe(404);
+    upstream(FIA_404);
+    expect(await (await vat(env)).json()).toEqual({ found: false, ban: BAN });
+  });
+
+  it('accepts the token when the stored secret has surrounding whitespace', async () => {
+    const res = await call({ OVERRIDES: memoryKV().kv, ADMIN_TOKEN: `${TOKEN}\n` }, 'GET', '/admin/api/overrides');
+    expect(res.status).toBe(200);
+  });
+
+  it('confirms a save with officialFound null when FIA hangs', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout'] });
+    try {
+      upstream(() => new Promise<Response>(() => {}));
+      const { kv, store } = memoryKV();
+      const pending = call({ UBN_BUCKET: published([]), OVERRIDES: kv, ADMIN_TOKEN: TOKEN }, 'PUT', `/admin/api/overrides/${BAN}`, {
+        body: MANUAL,
+      });
+      let settled = false;
+      void pending.then(() => (settled = true));
+      // The token check awaits real crypto first, so the timeout is armed only after it.
+      for (let i = 0; i < 100 && !settled; i++) await vi.advanceTimersByTimeAsync(100);
+      const res = await pending;
+      expect(res.status).toBe(200);
+      expect(await res.json()).toMatchObject({ officialFound: null });
+      expect(store.has(`ban:${BAN}`)).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('lists every override across KV list pages', async () => {
