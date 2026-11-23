@@ -139,8 +139,11 @@ Worker 的 `/v1/vat/:ban` 有四種回應：
    `tw-ubn-overrides`，之後每次部署沿用同一個。API token 需要 Workers KV Storage 的編輯權限。
    想自己建立的話，執行 `npx wrangler@4 kv namespace create tw-ubn-overrides`，再把 `id` 填進
    `wrangler.assets.jsonc` 的 `OVERRIDES` binding。
-2. 設定管理權杖：在 `worker/` 執行
-   `npx wrangler@4 secret put ADMIN_TOKEN --config wrangler.assets.jsonc`，輸入一個夠長的隨機字串。
+2. 設定管理權杖（一個夠長的隨機字串，例如 `openssl rand -hex 32`），兩種方式擇一：
+   - 用 GitHub Actions 部署時，把它設成 repo secret `ADMIN_TOKEN`。workflow 每次部署都會帶上它，
+     換權杖只要改 secret 再重跑 workflow。
+   - 或在 `worker/` 執行 `npx wrangler@4 secret put ADMIN_TOKEN --config wrangler.assets.jsonc`。
+   repo secret 沒設定時，部署不會動到 Worker 上既有的 `ADMIN_TOKEN`。
 3. 打開 `https://<你的worker>/admin`，貼上權杖即可新增、編輯、刪除。
 
 沒有設定 `ADMIN_TOKEN` 時，管理 API 回 `503`。沒有綁定 `OVERRIDES` 時，`/admin` 一律回 `404`，
