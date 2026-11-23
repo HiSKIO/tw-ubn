@@ -37,7 +37,7 @@ export async function handleAdmin(req: Request, url: URL, deps: AdminDeps): Prom
 
   switch (req.method) {
     case 'GET': {
-      const rec = await getOverride(deps.kv, ban);
+      const rec = await getOverride(deps.kv, ban, { fresh: true });
       return rec ? json({ record: rec }, 200) : json({ error: 'not_found' }, 404);
     }
     case 'PUT': {
@@ -49,7 +49,7 @@ export async function handleAdmin(req: Request, url: URL, deps: AdminDeps): Prom
       }
       const parsed = parseManualInput(ban, body);
       if (!parsed.ok) return json({ error: parsed.error }, 400);
-      const [record, officialFound] = await Promise.all([putOverride(deps.kv, parsed.value), deps.officialFound(ban)]);
+      const [record, officialFound] = await Promise.all([putOverride(deps.kv, parsed.value), boundedOfficialFound(deps, ban)]);
       return json({ record, officialFound }, 200);
     }
     case 'DELETE':
@@ -60,13 +60,23 @@ export async function handleAdmin(req: Request, url: URL, deps: AdminDeps): Prom
   }
 }
 
+/** FIA has no timeout of its own, and a hung FIA must not hold the save confirmation. */
+const OFFICIAL_FOUND_TIMEOUT_MS = 5000;
+
+function boundedOfficialFound(deps: AdminDeps, ban: string): Promise<boolean | null> {
+  return Promise.race([
+    deps.officialFound(ban).catch(() => null),
+    new Promise<null>((resolve) => setTimeout(() => resolve(null), OFFICIAL_FOUND_TIMEOUT_MS)),
+  ]);
+}
+
 /** Compare SHA-256 digests so the time taken depends on neither content nor length. */
 async function authorized(req: Request, token: string): Promise<boolean> {
   const m = (req.headers.get('Authorization') ?? '').match(/^Bearer\s+(.+)$/i);
   if (!m) return false;
   const enc = new TextEncoder();
   const [a, b] = await Promise.all(
-    [m[1].trim(), token].map(async (s) => new Uint8Array(await crypto.subtle.digest('SHA-256', enc.encode(s)))),
+    [m[1].trim(), token.trim()].map(async (s) => new Uint8Array(await crypto.subtle.digest('SHA-256', enc.encode(s)))),
   );
   let diff = 0;
   for (let i = 0; i < a.length; i++) diff |= a[i] ^ b[i];
@@ -199,9 +209,9 @@ const PAGE = `<!doctype html>
   var API = '/admin/api/overrides';
   var ERRORS = {
     invalid_ubn: '統編格式或檢查碼錯誤。',
-    invalid_name: '抬頭必填，最多 200 字，不可包含換行等控制字元。',
+    invalid_name: '抬頭必填，最多 200 字，不可包含換行等控制字元或造字（私用區字元，電子發票無法顯示）。',
     invalid_kind: '類型不正確。',
-    invalid_address: '地址最多 300 字，不可包含換行等控制字元。',
+    invalid_address: '地址最多 300 字，不可包含換行等控制字元或造字（私用區字元）。',
     invalid_note: '備註最多 500 字。',
     invalid_body: '送出的資料格式不正確。',
     unauthorized: '權杖錯誤或尚未填寫。',
