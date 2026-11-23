@@ -32,7 +32,7 @@ module PaidTw
 
     STATUSES = %w[active suspended closed].freeze
     KINDS = %w[business nonprofit school agency].freeze
-    SOURCES = %w[dataset fia-api gcis].freeze
+    SOURCES = %w[dataset fia-api gcis manual].freeze
 
     DEFAULT_TIMEOUT = 2
     SUCCESS = (200..299)

@@ -13,8 +13,12 @@ export interface LookupTitleOptions {
   fetchImpl?: typeof fetch;
 }
 
-/** Where the Worker found the record. */
-export type TitleSource = 'dataset' | 'fia-api' | 'gcis';
+/**
+ * Where the Worker found the record. `manual` is an operator-entered record
+ * for a UBN no public source carries, served only when every official source
+ * missed.
+ */
+export type TitleSource = 'dataset' | 'fia-api' | 'gcis' | 'manual';
 
 /** A registered entity whose name is usable as an invoice title. */
 export interface TitleFound {
@@ -47,7 +51,7 @@ export type TitleLookupResult = TitleFound | TitleNotFound;
 
 const STATUSES: readonly string[] = ['active', 'suspended', 'closed'];
 const KINDS: readonly string[] = ['business', 'nonprofit', 'school', 'agency'];
-const SOURCES: readonly string[] = ['dataset', 'fia-api', 'gcis'];
+const SOURCES: readonly string[] = ['dataset', 'fia-api', 'gcis', 'manual'];
 
 /**
  * Look up the invoice title for a UBN through a deployed tw-ubn Worker

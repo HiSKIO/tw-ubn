@@ -20,6 +20,19 @@
       }
     },
     {
+      "label": "a manual override keeps source manual",
+      "status": 200,
+      "body": "{\"found\":true,\"ban\":\"22099131\",\"name\":\"王大明會計師事務所\",\"address\":\"臺北市中正區\",\"kind\":\"business\",\"source\":\"manual\"}",
+      "expect": {
+        "found": true,
+        "ban": "22099131",
+        "name": "王大明會計師事務所",
+        "address": "臺北市中正區",
+        "kind": "business",
+        "source": "manual"
+      }
+    },
+    {
       "label": "closed status and closedDate are kept (caller decides)",
       "status": 200,
       "body": "{\"found\":true,\"ban\":\"22099131\",\"name\":\"某某商行\",\"status\":\"closed\",\"source\":\"gcis\",\"closedDate\":\"2024-05-01\"}",
